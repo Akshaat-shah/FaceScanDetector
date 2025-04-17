@@ -94,8 +94,10 @@ class FaceOverlayView @JvmOverloads constructor(
         // Draw face bounding box if face detected
         if (metrics.detectionConfidence > 0) {
             drawBoundingBox(canvas, canvasWidth, canvasHeight, metrics)
-            drawLandmarks(canvas, canvasWidth, canvasHeight, metrics)
-            drawCrosshair(canvas, canvasWidth, canvasHeight, metrics)
+            // Removed drawLandmarks to hide the white dots
+            // drawLandmarks(canvas, canvasWidth, canvasHeight, metrics)
+            // Also removed crosshair
+            // drawCrosshair(canvas, canvasWidth, canvasHeight, metrics) 
         }
     }
     
