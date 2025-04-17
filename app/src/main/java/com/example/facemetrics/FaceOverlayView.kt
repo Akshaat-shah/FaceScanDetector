@@ -4,162 +4,249 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.View
+import java.util.*
+import kotlin.math.roundToInt
 
+/**
+ * Custom view that renders face metrics as an overlay on top of the camera preview.
+ * Displays bounding box, landmarks, and metrics panels.
+ */
 class FaceOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
-    
-    private var metrics: FaceMetrics? = null
-    
-    // Paints for different UI elements
+
+    // Paint objects for different elements
     private val boundingBoxPaint = Paint().apply {
         color = Color.GREEN
         style = Paint.Style.STROKE
-        strokeWidth = 5f
+        strokeWidth = 4f
+        isAntiAlias = true
     }
     
-    private val textPaint = Paint().apply {
+    private val landmarkPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 30f
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-    }
-    
-    private val backgroundPaint = Paint().apply {
-        color = Color.parseColor("#80000000")  // Semi-transparent black
-    }
-    
-    private val separatorPaint = Paint().apply {
-        color = Color.LTGRAY
+        style = Paint.Style.FILL
         strokeWidth = 2f
+        isAntiAlias = true
     }
     
     private val crosshairPaint = Paint().apply {
         color = Color.WHITE
+        style = Paint.Style.STROKE
         strokeWidth = 2f
+        isAntiAlias = true
     }
     
-    // Method to update with new metrics
-    fun updateMetrics(metrics: FaceMetrics?) {
-        this.metrics = metrics
-        invalidate() // Request redraw
+    private val panelPaint = Paint().apply {
+        color = Color.argb(150, 0, 0, 0)
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    
+    private val textPaint = Paint().apply {
+        color = Color.WHITE
+        textSize = 36f
+        isAntiAlias = true
+    }
+    
+    private val headerTextPaint = Paint().apply {
+        color = Color.WHITE
+        textSize = 40f
+        isFakeBoldText = true
+        isAntiAlias = true
+    }
+    
+    // Current face metrics to display
+    private var faceMetrics: FaceMetrics? = null
+    
+    // Panel dimensions and positions
+    private val panelPadding = 20f
+    private val panelWidth = 300f
+    private val panelHeight = 500f
+    private val bottomPanelHeight = 100f
+    
+    /**
+     * Update the face metrics to be displayed
+     */
+    fun updateFaceMetrics(metrics: FaceMetrics) {
+        this.faceMetrics = metrics
+        invalidate() // Trigger redraw
     }
     
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         
-        val metrics = this.metrics ?: return
+        val metrics = faceMetrics ?: return
         
-        // Draw the face bounding box if we have valid coordinates
-        if (metrics.bbW > 0 && metrics.bbH > 0) {
-            // Create rect for bounding box (scaled to view size)
-            val rect = RectF(
-                metrics.bbCol.toFloat(),
-                metrics.bbRow.toFloat(),
-                (metrics.bbCol + metrics.bbW).toFloat(),
-                (metrics.bbRow + metrics.bbH).toFloat()
-            )
-            
-            // Draw the bounding box
-            canvas.drawRect(rect, boundingBoxPaint)
-            
-            // Draw crosshair in the center of the face
-            val centerX = rect.centerX()
-            val centerY = rect.centerY()
-            val crosshairSize = 20f
-            
-            canvas.drawLine(centerX - crosshairSize, centerY, centerX + crosshairSize, centerY, crosshairPaint)
-            canvas.drawLine(centerX, centerY - crosshairSize, centerX, centerY + crosshairSize, crosshairPaint)
+        val canvasWidth = width.toFloat()
+        val canvasHeight = height.toFloat()
+        
+        // Draw the metrics panels first (as background)
+        drawPositionPanel(canvas, canvasWidth, canvasHeight, metrics)
+        drawQualityPanel(canvas, canvasWidth, canvasHeight, metrics)
+        drawOrientationPanel(canvas, canvasWidth, canvasHeight, metrics)
+        
+        // Draw face bounding box if face detected
+        if (metrics.detectionConfidence > 0) {
+            drawBoundingBox(canvas, canvasWidth, canvasHeight, metrics)
+            drawLandmarks(canvas, canvasWidth, canvasHeight, metrics)
+            drawCrosshair(canvas, canvasWidth, canvasHeight, metrics)
         }
-        
-        // Draw metrics information panel on the left
-        drawMetricsPanel(canvas, metrics, true)
-        
-        // Draw metrics information panel on the right
-        drawMetricsPanel(canvas, metrics, false)
     }
     
-    private fun drawMetricsPanel(canvas: Canvas, metrics: FaceMetrics, isLeftPanel: Boolean) {
-        val metrics = listPairsByPanel(metrics, isLeftPanel)
+    /**
+     * Draw the bounding box around the detected face
+     */
+    private fun drawBoundingBox(canvas: Canvas, canvasWidth: Float, canvasHeight: Float, metrics: FaceMetrics) {
+        val boundingBox = metrics.boundingBox
         
-        val padding = 10f
-        val lineHeight = 40f
-        val panelWidth = width / 3f  // Panel takes 1/3 of the screen width
-        
-        // Background rectangle
-        val panelRect = RectF(
-            if (isLeftPanel) 0f else width - panelWidth,
-            0f,
-            if (isLeftPanel) panelWidth else width.toFloat(),
-            padding + metrics.size * lineHeight + padding
+        val rect = RectF(
+            boundingBox.left * canvasWidth,
+            boundingBox.top * canvasHeight,
+            boundingBox.right * canvasWidth,
+            boundingBox.bottom * canvasHeight
         )
         
-        canvas.drawRect(panelRect, backgroundPaint)
-        
-        // Draw each metric
-        metrics.forEachIndexed { index, pair ->
-            val textY = padding + (index + 1) * lineHeight
-            val textX = if (isLeftPanel) padding else width - panelWidth + padding
-            
-            // Draw metric name
-            canvas.drawText(
-                "${pair.first}",
-                textX,
-                textY,
-                textPaint
-            )
-            
-            // Draw metric value (aligned to right side of panel)
-            val valueText = "${pair.second}"
-            val valueWidth = textPaint.measureText(valueText)
-            val valueX = if (isLeftPanel) {
-                panelWidth - valueWidth - padding
-            } else {
-                width - valueWidth - padding
-            }
-            
-            canvas.drawText(
-                valueText,
-                valueX,
-                textY,
-                textPaint
-            )
+        canvas.drawRect(rect, boundingBoxPaint)
+    }
+    
+    /**
+     * Draw facial landmarks as small circles
+     */
+    private fun drawLandmarks(canvas: Canvas, canvasWidth: Float, canvasHeight: Float, metrics: FaceMetrics) {
+        for (landmark in metrics.landmarks) {
+            val x = landmark.position.x * canvasWidth
+            val y = landmark.position.y * canvasHeight
+            canvas.drawCircle(x, y, 5f, landmarkPaint)
         }
     }
     
-    // Helper function to organize metrics by panel (left or right)
-    private fun listPairsByPanel(metrics: FaceMetrics, isLeftPanel: Boolean): List<Pair<String, Any>> {
-        return if (isLeftPanel) {
-            listOf(
-                Pair("Sequence", metrics.sequence),
-                Pair("Pitch", metrics.pitch.toInt()),
-                Pair("Roll", metrics.roll.toInt()),
-                Pair("Yaw", metrics.yaw.toInt()),
-                Pair("Quality", metrics.quality.toInt()),
-                Pair("Range", metrics.range.toInt()),
-                Pair("IPD", metrics.ipd.toInt()),
-                Pair("bbRow", metrics.bbRow),
-                Pair("bbCol", metrics.bbCol),
-                Pair("bbW", metrics.bbW),
-                Pair("bbH", metrics.bbH)
-            )
-        } else {
-            listOf(
-                Pair("Fusion", metrics.fusion),
-                Pair("Face", metrics.face),
-                Pair("Depth", metrics.depth),
-                Pair("PeriL", metrics.periL),
-                Pair("PeriR", metrics.periR),
-                Pair("Glasses", metrics.glasses),
-                Pair("Blink", metrics.blink),
-                Pair("LiveProb", metrics.liveProb)
-            )
-        }
+    /**
+     * Draw a crosshair at the center of the face
+     */
+    private fun drawCrosshair(canvas: Canvas, canvasWidth: Float, canvasHeight: Float, metrics: FaceMetrics) {
+        val centerX = (metrics.facePosition.x + 0.5f) * canvasWidth
+        val centerY = (metrics.facePosition.y + 0.5f) * canvasHeight
+        
+        // Draw crosshair lines
+        canvas.drawLine(centerX - 15, centerY, centerX + 15, centerY, crosshairPaint)
+        canvas.drawLine(centerX, centerY - 15, centerX, centerY + 15, crosshairPaint)
+    }
+    
+    /**
+     * Draw the position metrics panel (left side)
+     */
+    private fun drawPositionPanel(canvas: Canvas, canvasWidth: Float, canvasHeight: Float, metrics: FaceMetrics) {
+        // Left panel for position metrics
+        val panelRect = RectF(
+            panelPadding,
+            panelPadding,
+            panelPadding + panelWidth,
+            panelPadding + panelHeight
+        )
+        
+        canvas.drawRoundRect(panelRect, 15f, 15f, panelPaint)
+        
+        // Draw header
+        canvas.drawText("Position Metrics:", panelRect.left + 20, panelRect.top + 50, headerTextPaint)
+        
+        // Draw metrics
+        var y = panelRect.top + 120
+        val x = panelRect.left + 20
+        val lineSpacing = 50f
+        
+        canvas.drawText("Distance:", x, y, textPaint)
+        canvas.drawText("${(metrics.interpupillaryDistance * 100).roundToInt()}mm", x, y + 40, textPaint)
+        y += lineSpacing + 40
+        
+        canvas.drawText("Face Size:", x, y, textPaint)
+        canvas.drawText("${(metrics.faceWidth * canvasWidth).roundToInt()}x${(metrics.faceHeight * canvasHeight).roundToInt()}px", 
+            x, y + 40, textPaint)
+        y += lineSpacing + 40
+        
+        canvas.drawText("Center:", x, y, textPaint)
+        canvas.drawText("X: ${(metrics.facePosition.x * 100).roundToInt()}mm", x, y + 40, textPaint)
+        canvas.drawText("Y: ${(metrics.facePosition.y * 100).roundToInt()}mm", x, y + 80, textPaint)
+    }
+    
+    /**
+     * Draw the quality metrics panel (right side)
+     */
+    private fun drawQualityPanel(canvas: Canvas, canvasWidth: Float, canvasHeight: Float, metrics: FaceMetrics) {
+        // Right panel for quality metrics
+        val panelRect = RectF(
+            canvasWidth - panelPadding - panelWidth,
+            panelPadding,
+            canvasWidth - panelPadding,
+            panelPadding + panelHeight
+        )
+        
+        canvas.drawRoundRect(panelRect, 15f, 15f, panelPaint)
+        
+        // Draw header
+        canvas.drawText("Quality Metrics:", panelRect.left + 20, panelRect.top + 50, headerTextPaint)
+        
+        // Draw metrics
+        var y = panelRect.top + 120
+        val x = panelRect.left + 20
+        val lineSpacing = 50f
+        
+        canvas.drawText("Quality:", x, y, textPaint)
+        canvas.drawText("${(metrics.qualityScore * 100).roundToInt() / 100f}", x, y + 40, textPaint)
+        y += lineSpacing + 40
+        
+        canvas.drawText("Smiling:", x, y, textPaint)
+        canvas.drawText(
+            if (metrics.isSmiling) "Yes (${(metrics.smileConfidence * 10).roundToInt() / 10f})" 
+            else "No (${(metrics.smileConfidence * 10).roundToInt() / 10f})",
+            x, y + 40, textPaint
+        )
+        y += lineSpacing + 40
+        
+        canvas.drawText("Eyes:", x, y, textPaint)
+        canvas.drawText(
+            if (metrics.areEyesOpen) "Open"
+            else "Closed",
+            x, y + 40, textPaint
+        )
+        
+        y += lineSpacing + 40
+        canvas.drawText("Glasses:", x, y, textPaint)
+        canvas.drawText(
+            if (metrics.hasGlasses) "Yes" else "No",
+            x, y + 40, textPaint
+        )
+    }
+    
+    /**
+     * Draw the orientation panel (bottom)
+     */
+    private fun drawOrientationPanel(canvas: Canvas, canvasWidth: Float, canvasHeight: Float, metrics: FaceMetrics) {
+        // Bottom panel for orientation data
+        val panelRect = RectF(
+            canvasWidth / 2 - 250,
+            canvasHeight - panelPadding - bottomPanelHeight,
+            canvasWidth / 2 + 250,
+            canvasHeight - panelPadding
+        )
+        
+        canvas.drawRoundRect(panelRect, 15f, 15f, panelPaint)
+        
+        // Draw header
+        canvas.drawText("Orientation Data:", panelRect.left + 20, panelRect.top + 40, headerTextPaint)
+        
+        // Draw orientation values on one line
+        val y = panelRect.top + 80
+        val pitch = String.format(Locale.US, "%.1f°", metrics.pitch)
+        val roll = String.format(Locale.US, "%.1f°", metrics.roll)
+        val yaw = String.format(Locale.US, "%.1f°", metrics.yaw)
+        
+        canvas.drawText("Pitch: $pitch   Roll: $roll   Yaw: $yaw", 
+            panelRect.left + 50, y, textPaint)
     }
 }

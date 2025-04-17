@@ -1,114 +1,224 @@
 package com.example.facemetrics
 
+import android.app.Application
+import android.util.Log
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.ViewModel
-import com.google.mlkit.vision.face.Face
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import kotlin.math.abs
 
-enum class DetectionStatus {
-    NO_FACE,
-    FACE_DETECTED,
-    FACE_TOO_FAR,
-    FACE_TOO_CLOSE,
-    FACE_MISALIGNED
-}
+private const val TAG = "FaceMetricsViewModel"
 
-data class FaceMetrics(
-    val sequence: Int = 0,
-    val pitch: Float = 0f,   // Head up/down angle, positive is down
-    val roll: Float = 0f,    // Head tilt left/right, positive is to the right
-    val yaw: Float = 0f,     // Head turning left/right, positive is to the right
-    val quality: Float = 0f, // Face detection quality
-    val range: Float = 0f,   // Distance from camera
-    val ipd: Float = 0f,     // Interpupillary distance
-    val bbRow: Int = 0,      // Bounding box row coordinate
-    val bbCol: Int = 0,      // Bounding box column coordinate
-    val bbW: Int = 0,        // Bounding box width
-    val bbH: Int = 0,        // Bounding box height
-    val fusion: Int = 0,     // Fusion score (for liveness detection)
-    val face: Int = 0,       // Face detection confidence
-    val depth: Int = 0,      // Depth estimation
-    val periL: Int = 0,      // Left periocular score
-    val periR: Int = 0,      // Right periocular score
-    val glasses: Int = 0,    // Glasses detection (0=no, 1=yes)
-    val blink: Int = 0,      // Blink detection
-    val liveProb: Int = 0    // Liveness probability
-) {
-    override fun toString(): String {
-        return """
-            Sequence: $sequence
-            Pitch: $pitch
-            Roll: $roll
-            Yaw: $yaw
-            Quality: $quality
-            Range: $range
-            IPD: $ipd
-            bbRow: $bbRow
-            bbCol: $bbCol
-            bbW: $bbW
-            bbH: $bbH
-            Fusion: $fusion
-            Face: $face
-            Depth: $depth
-            PeriL: $periL
-            PeriR: $periR
-            Glasses: $glasses
-            Blink: $blink
-            LiveProb: $liveProb
-        """.trimIndent()
-    }
-}
+/**
+ * ViewModel that manages face detection processing and metrics calculation.
+ * Handles camera setup, face detection, and provides metrics via LiveData.
+ */
+class FaceMetricsViewModel(application: Application) : AndroidViewModel(application) {
 
-class FaceMetricsViewModel : ViewModel() {
+    // Camera executor for background processing
+    private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     
+    // Face analyzer for processing camera frames
+    private lateinit var faceAnalyzer: FaceAnalyzer
+    
+    // LiveData for face metrics
     private val _faceMetrics = MutableLiveData<FaceMetrics>()
-    val faceMetrics: LiveData<FaceMetrics> = _faceMetrics
+    val faceMetrics: LiveData<FaceMetrics> get() = _faceMetrics
     
-    private val _detectionStatus = MutableLiveData<DetectionStatus>()
-    val detectionStatus: LiveData<DetectionStatus> = _detectionStatus
+    // Tracking average metrics for smoothing
+    private val recentMetrics = mutableListOf<FaceMetrics>()
+    private val maxRecentMetrics = 5 // Number of frames to average
     
-    private val metricsCalculator = MetricsCalculator()
-    private var sequenceNumber = 0
-    
-    fun processFace(face: Face?, imageWidth: Int, imageHeight: Int) {
-        if (face == null) {
-            _detectionStatus.postValue(DetectionStatus.NO_FACE)
-            return
-        }
+    /**
+     * Start the camera and face detection process
+     */
+    fun startCamera(
+        lifecycleOwner: LifecycleOwner,
+        previewView: androidx.camera.view.PreviewView
+    ) {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(getApplication())
         
-        // Update sequence number
-        sequenceNumber++
-        
-        // Calculate metrics
-        val metrics = metricsCalculator.calculateMetrics(face, sequenceNumber, imageWidth, imageHeight)
-        _faceMetrics.postValue(metrics)
-        
-        // Determine detection status
-        updateDetectionStatus(metrics)
+        cameraProviderFuture.addListener({
+            try {
+                val cameraProvider = cameraProviderFuture.get()
+                
+                // Set up the preview use case
+                val preview = Preview.Builder().build()
+                preview.setSurfaceProvider(previewView.surfaceProvider)
+                
+                // Set up the analyzer use case
+                val imageAnalysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                
+                // Initialize the face analyzer
+                faceAnalyzer = FaceAnalyzer { metrics ->
+                    processFaceMetrics(metrics)
+                }
+                
+                imageAnalysis.setAnalyzer(cameraExecutor, faceAnalyzer)
+                
+                // Select front camera
+                val cameraSelector = CameraSelector.Builder()
+                    .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
+                    .build()
+                
+                // Unbind any bound use cases before rebinding
+                cameraProvider.unbindAll()
+                
+                // Bind use cases to camera
+                cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    cameraSelector,
+                    preview,
+                    imageAnalysis
+                )
+                
+            } catch (exc: Exception) {
+                Log.e(TAG, "Camera setup failed", exc)
+            }
+        }, ContextCompat.getMainExecutor(getApplication()))
     }
     
-    private fun updateDetectionStatus(metrics: FaceMetrics) {
-        // Example thresholds - these should be calibrated based on real usage
-        when {
-            metrics.range > 150 -> _detectionStatus.postValue(DetectionStatus.FACE_TOO_FAR)
-            metrics.range < 50 -> _detectionStatus.postValue(DetectionStatus.FACE_TOO_CLOSE)
-            // Check for face alignment (pitch, roll, yaw within acceptable range)
-            Math.abs(metrics.pitch) > 20f || 
-            Math.abs(metrics.roll) > 20f || 
-            Math.abs(metrics.yaw) > 20f -> _detectionStatus.postValue(DetectionStatus.FACE_MISALIGNED)
-            else -> _detectionStatus.postValue(DetectionStatus.FACE_DETECTED)
+    /**
+     * Process face metrics with smoothing to reduce jitter
+     */
+    private fun processFaceMetrics(metrics: FaceMetrics) {
+        // Add to recent metrics for averaging
+        recentMetrics.add(metrics)
+        
+        // Keep only the most recent frames
+        if (recentMetrics.size > maxRecentMetrics) {
+            recentMetrics.removeAt(0)
+        }
+        
+        // If we have multiple frames and the latest has a face detected, 
+        // calculate a smoothed version
+        if (recentMetrics.size > 1 && metrics.detectionConfidence > 0) {
+            val smoothedMetrics = calculateSmoothedMetrics()
+            _faceMetrics.postValue(smoothedMetrics)
+        } else {
+            // Otherwise just use the current metrics
+            _faceMetrics.postValue(metrics)
         }
     }
     
-    fun submitData() {
-        // This would typically send data to a server or process it further
-        // For this demo, we're just incrementing the sequence number
-        sequenceNumber++
+    /**
+     * Calculate smoothed metrics by averaging recent frames
+     * This reduces jitter in the display
+     */
+    private fun calculateSmoothedMetrics(): FaceMetrics {
+        // Only include frames with detected faces
+        val validMetrics = recentMetrics.filter { it.detectionConfidence > 0 }
         
-        // Update the current metrics with the new sequence number
-        _faceMetrics.value?.let {
-            val updated = it.copy(sequence = sequenceNumber)
-            _faceMetrics.postValue(updated)
+        if (validMetrics.isEmpty()) {
+            return FaceMetrics.createDefault()
+        }
+        
+        // Use the most recent metrics as the base
+        val latest = validMetrics.last()
+        
+        // If only one valid frame, return it
+        if (validMetrics.size == 1) {
+            return latest
+        }
+        
+        // Calculate average for each value
+        var avgIpd = 0f
+        var avgFaceWidth = 0f
+        var avgFaceHeight = 0f
+        var avgPositionX = 0f
+        var avgPositionY = 0f
+        var avgPitch = 0f
+        var avgRoll = 0f
+        var avgYaw = 0f
+        var avgQuality = 0f
+        var avgSmile = 0f
+        var avgLeftEye = 0f
+        var avgRightEye = 0f
+        
+        // Sum all values
+        for (metrics in validMetrics) {
+            avgIpd += metrics.interpupillaryDistance
+            avgFaceWidth += metrics.faceWidth
+            avgFaceHeight += metrics.faceHeight
+            avgPositionX += metrics.facePosition.x
+            avgPositionY += metrics.facePosition.y
+            avgPitch += metrics.pitch
+            avgRoll += metrics.roll
+            avgYaw += metrics.yaw
+            avgQuality += metrics.qualityScore
+            avgSmile += metrics.smileConfidence
+            avgLeftEye += metrics.leftEyeOpenConfidence
+            avgRightEye += metrics.rightEyeOpenConfidence
+        }
+        
+        // Calculate averages
+        val count = validMetrics.size.toFloat()
+        avgIpd /= count
+        avgFaceWidth /= count
+        avgFaceHeight /= count
+        avgPositionX /= count
+        avgPositionY /= count
+        avgPitch /= count
+        avgRoll /= count
+        avgYaw /= count
+        avgQuality /= count
+        avgSmile /= count
+        avgLeftEye /= count
+        avgRightEye /= count
+        
+        // Create smoothed bounding box (weighting recent more heavily)
+        val recentBox = latest.boundingBox
+        val smoothedBox = FaceMetrics.BoundingBox(
+            (recentBox.left * 0.7f + avgPositionX * 0.3f - avgFaceWidth / 2).coerceIn(0f, 1f),
+            (recentBox.top * 0.7f + avgPositionY * 0.3f - avgFaceHeight / 2).coerceIn(0f, 1f),
+            (recentBox.right * 0.7f + avgPositionX * 0.3f + avgFaceWidth / 2).coerceIn(0f, 1f),
+            (recentBox.bottom * 0.7f + avgPositionY * 0.3f + avgFaceHeight / 2).coerceIn(0f, 1f)
+        )
+        
+        // Use boolean values from most recent frame
+        val isSmiling = avgSmile > 0.7f
+        val areEyesOpen = (avgLeftEye + avgRightEye) / 2 > 0.5f
+        
+        // Use landmarks from most recent frame
+        return FaceMetrics(
+            boundingBox = smoothedBox,
+            interpupillaryDistance = avgIpd,
+            faceWidth = avgFaceWidth,
+            faceHeight = avgFaceHeight,
+            facePosition = FaceMetrics.Point(avgPositionX, avgPositionY),
+            pitch = avgPitch,
+            roll = avgRoll,
+            yaw = avgYaw,
+            qualityScore = avgQuality,
+            smileConfidence = avgSmile,
+            isSmiling = isSmiling,
+            leftEyeOpenConfidence = avgLeftEye,
+            rightEyeOpenConfidence = avgRightEye,
+            areEyesOpen = areEyesOpen,
+            hasGlasses = latest.hasGlasses, // Use latest detection for boolean values
+            landmarks = latest.landmarks, // Use latest landmarks
+            detectionConfidence = latest.detectionConfidence
+        )
+    }
+    
+    /**
+     * Clean up resources when ViewModel is cleared
+     */
+    override fun onCleared() {
+        super.onCleared()
+        cameraExecutor.shutdown()
+        if (::faceAnalyzer.isInitialized) {
+            faceAnalyzer.shutdown()
         }
     }
 }

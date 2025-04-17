@@ -1,155 +1,240 @@
 package com.example.facemetrics
 
+import android.graphics.PointF
 import android.graphics.Rect
 import com.google.mlkit.vision.face.Face
+import com.google.mlkit.vision.face.FaceLandmark
 import kotlin.math.abs
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.sqrt
 
+/**
+ * Calculator class that converts ML Kit Face objects to FaceMetrics.
+ * Handles all metric calculations from raw face detection data.
+ */
 class MetricsCalculator {
-    
-    companion object {
-        private const val DEFAULT_FACE_SIZE = 100 // Used for scaling metrics
-        private const val DEFAULT_QUALITY = 50f
-        private const val DEFAULT_DEPTH = 100
-        private const val QUALITY_SCALE = 100f // Scale factor for quality metrics
-    }
-    
-    // Calculate all metrics from a detected face
-    fun calculateMetrics(face: Face, sequence: Int, imageWidth: Int, imageHeight: Int): FaceMetrics {
-        // Get facial orientation (Euler angles)
-        val pitch = face.headEulerAngleX // Head up/down
-        val roll = face.headEulerAngleZ  // Head tilt
-        val yaw = face.headEulerAngleY   // Head left/right
-        
-        // Get face bounding box
+
+    /**
+     * Calculates comprehensive face metrics from a detected face
+     * @param face The face object from ML Kit detection
+     * @param imageWidth Width of the image being processed
+     * @param imageHeight Height of the image being processed
+     * @return FaceMetrics containing all calculated metrics
+     */
+    fun calculateMetrics(face: Face, imageWidth: Int, imageHeight: Int): FaceMetrics {
+        // Extract bounding box
         val boundingBox = face.boundingBox
-        val bbW = boundingBox.width()
-        val bbH = boundingBox.height()
-        val bbRow = boundingBox.top
-        val bbCol = boundingBox.left
+        val normalizedBoundingBox = normalizeRect(boundingBox, imageWidth, imageHeight)
         
-        // Calculate quality metric based on face size, orientation and tracking confidence
-        val sizeQuality = calculateSizeQuality(bbW, bbH, imageWidth, imageHeight)
-        val orientationQuality = calculateOrientationQuality(pitch, roll, yaw)
-        val trackingQuality = face.trackingId?.let { 100f } ?: 50f
-        val quality = (sizeQuality + orientationQuality + trackingQuality) / 3f
+        // Calculate interpupillary distance (distance between eyes)
+        val ipd = calculateInterpupillaryDistance(face, imageWidth, imageHeight)
         
-        // Calculate range (distance from camera) - this is a rough estimate based on face size
-        val range = calculateRange(bbW, bbH, imageWidth, imageHeight)
+        // Extract face position (center of face)
+        val faceCenter = calculateFaceCenter(boundingBox)
+        val normalizedFaceCenter = normalizeFaceCenter(faceCenter, imageWidth, imageHeight)
         
-        // Calculate interpupillary distance if landmarks available
-        val ipd = calculateIPD(face, imageWidth)
+        // Get face dimensions
+        val faceWidth = boundingBox.width() / imageWidth.toFloat()
+        val faceHeight = boundingBox.height() / imageHeight.toFloat()
         
-        // Calculate other metrics (these would normally come from more advanced algorithms)
-        // For demo purposes, we'll use simulated values based on available data
-        val fusion = simulateFusionScore(quality)
-        val faceConfidence = if (quality > 70f) 1 else 0
-        val depth = DEFAULT_DEPTH
-        val periL = simulatePeriodicScore(face, true)
-        val periR = simulatePeriodicScore(face, false)
-        val glasses = if (face.rightEyeOpenProbability != null && 
-                         face.rightEyeOpenProbability!! < 0.2f && 
-                         face.leftEyeOpenProbability != null && 
-                         face.leftEyeOpenProbability!! < 0.2f) 1 else 0
-        val blink = if (face.rightEyeOpenProbability != null && 
-                       face.leftEyeOpenProbability != null) {
-            if (face.rightEyeOpenProbability!! < 0.3f || 
-                face.leftEyeOpenProbability!! < 0.3f) 1 else 0
-        } else 0
-        val liveProb = simulateLiveProb(quality)
+        // Extract orientation metrics
+        val pitch = face.headEulerAngleX // Up/down
+        val roll = face.headEulerAngleZ // Tilt
+        val yaw = face.headEulerAngleY // Left/right
         
+        // Process quality metrics
+        val smileConfidence = face.smilingProbability ?: 0f
+        val isSmiling = smileConfidence > 0.7f
+        
+        val leftEyeOpenConfidence = face.leftEyeOpenProbability ?: 0f
+        val rightEyeOpenConfidence = face.rightEyeOpenProbability ?: 0f
+        val areEyesOpen = (leftEyeOpenConfidence + rightEyeOpenConfidence) / 2 > 0.5f
+        
+        // Check for glasses
+        // This is a simplified approach; ML Kit doesn't directly report glasses
+        val hasGlasses = false // Would need additional logic with a classifier
+        
+        // Overall quality score calculation
+        val qualityScore = calculateQualityScore(
+            face,
+            leftEyeOpenConfidence,
+            rightEyeOpenConfidence,
+            smileConfidence,
+            pitch, roll, yaw
+        )
+        
+        // Extract landmarks
+        val landmarks = extractLandmarks(face, imageWidth, imageHeight)
+        
+        // Create and return the final metrics object
         return FaceMetrics(
-            sequence = sequence,
+            boundingBox = FaceMetrics.BoundingBox(
+                normalizedBoundingBox.left,
+                normalizedBoundingBox.top,
+                normalizedBoundingBox.right,
+                normalizedBoundingBox.bottom
+            ),
+            interpupillaryDistance = ipd,
+            faceWidth = faceWidth,
+            faceHeight = faceHeight,
+            facePosition = FaceMetrics.Point(normalizedFaceCenter.x, normalizedFaceCenter.y),
             pitch = pitch,
             roll = roll,
             yaw = yaw,
-            quality = quality,
-            range = range,
-            ipd = ipd,
-            bbRow = bbRow,
-            bbCol = bbCol,
-            bbW = bbW,
-            bbH = bbH,
-            fusion = fusion,
-            face = faceConfidence,
-            depth = depth,
-            periL = periL,
-            periR = periR,
-            glasses = glasses,
-            blink = blink,
-            liveProb = liveProb
+            qualityScore = qualityScore,
+            smileConfidence = smileConfidence,
+            isSmiling = isSmiling,
+            leftEyeOpenConfidence = leftEyeOpenConfidence,
+            rightEyeOpenConfidence = rightEyeOpenConfidence,
+            areEyesOpen = areEyesOpen,
+            hasGlasses = hasGlasses,
+            landmarks = landmarks,
+            detectionConfidence = face.trackingId?.toFloat() ?: 0f
         )
     }
     
-    // Calculate quality based on face size relative to image
-    private fun calculateSizeQuality(faceWidth: Int, faceHeight: Int, imageWidth: Int, imageHeight: Int): Float {
-        val faceSizeRatio = (faceWidth * faceHeight).toFloat() / (imageWidth * imageHeight).toFloat()
-        // Optimal ratio is around 0.15-0.25 (face takes up about 20% of the frame)
-        return when {
-            faceSizeRatio < 0.05f -> 40f * (faceSizeRatio / 0.05f) // Too small
-            faceSizeRatio > 0.5f -> 40f * (1 - (faceSizeRatio - 0.5f) / 0.5f) // Too big
-            else -> 80f * (1 - abs(faceSizeRatio - 0.2f) / 0.15f) // Good range
-        }.coerceIn(10f, 100f)
-    }
-    
-    // Calculate quality based on face orientation
-    private fun calculateOrientationQuality(pitch: Float, roll: Float, yaw: Float): Float {
-        // Ideal orientation is near 0 for all angles
-        val pitchQuality = 100f * (1 - min(abs(pitch) / 45f, 1f))
-        val rollQuality = 100f * (1 - min(abs(roll) / 45f, 1f))
-        val yawQuality = 100f * (1 - min(abs(yaw) / 45f, 1f))
-        
-        return (pitchQuality + rollQuality + yawQuality) / 3f
-    }
-    
-    // Estimate distance from camera based on face size
-    private fun calculateRange(faceWidth: Int, faceHeight: Int, imageWidth: Int, imageHeight: Int): Float {
-        // This is a very rough estimate - would need calibration in real usage
-        val faceSize = max(faceWidth, faceHeight)
-        val imageSize = min(imageWidth, imageHeight)
-        return 100f * (imageSize.toFloat() / faceSize.toFloat())
-    }
-    
-    // Calculate interpupillary distance if eye landmarks are available
-    private fun calculateIPD(face: Face, imageWidth: Int): Float {
-        // If landmarks are available, calculate actual IPD
-        val landmarks = face.allLandmarks
-        
-        // Find left and right eye landmarks
-        val leftEye = landmarks.find { it.landmarkType == com.google.mlkit.vision.face.FaceLandmark.LEFT_EYE }
-        val rightEye = landmarks.find { it.landmarkType == com.google.mlkit.vision.face.FaceLandmark.RIGHT_EYE }
+    /**
+     * Calculate the interpupillary distance (distance between eyes)
+     */
+    private fun calculateInterpupillaryDistance(face: Face, imageWidth: Int, imageHeight: Int): Float {
+        val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)
+        val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)
         
         return if (leftEye != null && rightEye != null) {
             val leftPoint = leftEye.position
             val rightPoint = rightEye.position
-            val distance = sqrt(
-                (leftPoint.x - rightPoint.x) * (leftPoint.x - rightPoint.x) +
-                (leftPoint.y - rightPoint.y) * (leftPoint.y - rightPoint.y)
-            )
             
-            // Normalize by image width
-            (distance / imageWidth) * 100f
+            // Calculate Euclidean distance between eye points
+            val deltaX = rightPoint.x - leftPoint.x
+            val deltaY = rightPoint.y - leftPoint.y
+            val distance = sqrt(deltaX * deltaX + deltaY * deltaY)
+            
+            // Normalize by image width to get relative IPD
+            distance / imageWidth
         } else {
-            // Default or estimated value if landmarks not available
-            face.boundingBox.width() * 0.3f
+            0f
         }
     }
     
-    // Simulate fusion score based on quality
-    private fun simulateFusionScore(quality: Float): Int {
-        return if (quality > 80f) 20 else ((quality / 80f) * 20f).toInt()
+    /**
+     * Calculate the center point of the face
+     */
+    private fun calculateFaceCenter(boundingBox: Rect): PointF {
+        val centerX = boundingBox.exactCenterX()
+        val centerY = boundingBox.exactCenterY()
+        return PointF(centerX, centerY)
     }
     
-    // Simulate periocular score
-    private fun simulatePeriodicScore(face: Face, isLeft: Boolean): Int {
-        val eyeOpenProb = if (isLeft) face.leftEyeOpenProbability else face.rightEyeOpenProbability
-        return if (eyeOpenProb != null && eyeOpenProb > 0.7f) 100 else 80
+    /**
+     * Normalize face center coordinates to range from -0.5 to 0.5
+     * where (0,0) is the center of the image
+     */
+    private fun normalizeFaceCenter(center: PointF, imageWidth: Int, imageHeight: Int): PointF {
+        val normalizedX = (center.x / imageWidth) - 0.5f
+        val normalizedY = (center.y / imageHeight) - 0.5f
+        return PointF(normalizedX, normalizedY)
     }
     
-    // Simulate liveness probability
-    private fun simulateLiveProb(quality: Float): Int {
-        return if (quality > 70f) 20 else 10
+    /**
+     * Normalize rectangle coordinates to range from 0 to 1
+     */
+    private fun normalizeRect(rect: Rect, imageWidth: Int, imageHeight: Int): RectF {
+        return RectF(
+            rect.left / imageWidth.toFloat(),
+            rect.top / imageHeight.toFloat(),
+            rect.right / imageWidth.toFloat(),
+            rect.bottom / imageHeight.toFloat()
+        )
     }
+    
+    /**
+     * Calculate a combined quality score for the face
+     */
+    private fun calculateQualityScore(
+        face: Face,
+        leftEyeOpenConfidence: Float,
+        rightEyeOpenConfidence: Float,
+        smileConfidence: Float,
+        pitch: Float,
+        roll: Float,
+        yaw: Float
+    ): Float {
+        // Weight factors for different aspects
+        val orientationWeight = 0.4f
+        val eyeWeight = 0.3f
+        val smileWeight = 0.1f
+        val landmarkWeight = 0.2f
+        
+        // Orientation score (penalize extreme angles)
+        val orientationScore = 1.0f - (
+            (abs(pitch) / 45f).coerceAtMost(1f) * 0.4f +
+            (abs(roll) / 45f).coerceAtMost(1f) * 0.3f +
+            (abs(yaw) / 45f).coerceAtMost(1f) * 0.3f
+        )
+        
+        // Eye openness score
+        val eyeScore = (leftEyeOpenConfidence + rightEyeOpenConfidence) / 2
+        
+        // Smile score (neutral is better for some applications)
+        val smileScore = 1.0f - abs(smileConfidence - 0.5f) * 2
+        
+        // Landmark presence score
+        val landmarkScore = if (face.allLandmarks.size >= 5) 1.0f else {
+            face.allLandmarks.size / 5f
+        }
+        
+        // Combined weighted score
+        val finalScore = orientationScore * orientationWeight +
+                         eyeScore * eyeWeight +
+                         smileScore * smileWeight +
+                         landmarkScore * landmarkWeight
+        
+        return finalScore.coerceIn(0f, 1f)
+    }
+    
+    /**
+     * Extract facial landmarks from the Face object
+     */
+    private fun extractLandmarks(face: Face, imageWidth: Int, imageHeight: Int): List<FaceMetrics.Landmark> {
+        val landmarkMap = mapOf(
+            FaceLandmark.LEFT_EYE to FaceMetrics.LandmarkType.LEFT_EYE,
+            FaceLandmark.RIGHT_EYE to FaceMetrics.LandmarkType.RIGHT_EYE,
+            FaceLandmark.LEFT_EAR to FaceMetrics.LandmarkType.LEFT_EAR,
+            FaceLandmark.RIGHT_EAR to FaceMetrics.LandmarkType.RIGHT_EAR,
+            FaceLandmark.LEFT_CHEEK to FaceMetrics.LandmarkType.LEFT_CHEEK,
+            FaceLandmark.RIGHT_CHEEK to FaceMetrics.LandmarkType.RIGHT_CHEEK,
+            FaceLandmark.NOSE_BASE to FaceMetrics.LandmarkType.NOSE_BASE,
+            FaceLandmark.MOUTH_LEFT to FaceMetrics.LandmarkType.MOUTH_LEFT,
+            FaceLandmark.MOUTH_RIGHT to FaceMetrics.LandmarkType.MOUTH_RIGHT,
+            FaceLandmark.MOUTH_BOTTOM to FaceMetrics.LandmarkType.MOUTH_BOTTOM
+        )
+        
+        val landmarks = mutableListOf<FaceMetrics.Landmark>()
+        
+        for ((mlkitType, metricType) in landmarkMap) {
+            face.getLandmark(mlkitType)?.let { landmark ->
+                val position = landmark.position
+                val normalizedX = position.x / imageWidth
+                val normalizedY = position.y / imageHeight
+                
+                landmarks.add(
+                    FaceMetrics.Landmark(
+                        metricType,
+                        FaceMetrics.Point(normalizedX, normalizedY)
+                    )
+                )
+            }
+        }
+        
+        return landmarks
+    }
+    
+    /**
+     * Rectangle with float coordinates
+     */
+    data class RectF(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float
+    )
 }
