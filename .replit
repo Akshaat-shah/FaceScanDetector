@@ -1,0 +1,51 @@
+modules = ["kotlin"]
+
+[nix]
+channel = "stable-24_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Android App Build"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "android_app"
+
+[[workflows.workflow]]
+name = "Android App Build"
+author = "agent"
+
+[workflows.workflow.metadata]
+agentRequireRestartOnSave = false
+
+[[workflows.workflow.tasks]]
+task = "packager.installForAll"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "./gradlew assembleDebug && echo \"Android APK built successfully at app/build/outputs/apk/debug/app-debug.apk\""
+
+[[workflows.workflow]]
+name = "android_app"
+author = "agent"
+
+[workflows.workflow.metadata]
+agentRequireRestartOnSave = false
+
+[[workflows.workflow.tasks]]
+task = "packager.installForAll"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd app && ./gradlew assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk && adb shell am start -n com.example.facemetrics/.MainActivity"
+
+[deployment]
+run = ["sh", "-c", "./gradlew assembleDebug && echo \"Android APK built successfully at app/build/outputs/apk/debug/app-debug.apk\""]

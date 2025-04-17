@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Face Metrics</string>
+    <string name="camera_permission_required">Camera permission is required to use this app</string>
+    <string name="storage_permission_required">Storage permission is required to save data</string>
+    <string name="submit_button">Submit</string>
+    <string name="qr_button">QR</string>
+    <string name="save_button">Save</string>
+    <string name="no_face_detected">No face detected</string>
+    <string name="face_too_far">Face too far</string>
+    <string name="face_too_close">Face too close</string>
+    <string name="align_face">Please align your face with the frame</string>
+    <string name="data_saved">Data saved successfully</string>
+    <string name="error_saving_data">Error saving data</string>
+    <string name="tab_pad_demo">PAD Demo</string>
+    <string name="tab_info">Info</string>
+</resources>
