@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
@@ -42,7 +43,8 @@ class FaceMetricsViewModel(application: Application) : AndroidViewModel(applicat
      */
     fun startCamera(
         lifecycleOwner: LifecycleOwner,
-        previewView: androidx.camera.view.PreviewView
+        previewView: androidx.camera.view.PreviewView,
+        imageCapture: ImageCapture? = null
     ) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(getApplication())
         
@@ -75,12 +77,24 @@ class FaceMetricsViewModel(application: Application) : AndroidViewModel(applicat
                 cameraProvider.unbindAll()
                 
                 // Bind use cases to camera
-                cameraProvider.bindToLifecycle(
-                    lifecycleOwner,
-                    cameraSelector,
-                    preview,
-                    imageAnalysis
-                )
+                if (imageCapture != null) {
+                    // Include image capture use case if provided
+                    cameraProvider.bindToLifecycle(
+                        lifecycleOwner,
+                        cameraSelector,
+                        preview,
+                        imageAnalysis,
+                        imageCapture
+                    )
+                } else {
+                    // Without image capture
+                    cameraProvider.bindToLifecycle(
+                        lifecycleOwner,
+                        cameraSelector,
+                        preview,
+                        imageAnalysis
+                    )
+                }
                 
             } catch (exc: Exception) {
                 Log.e(TAG, "Camera setup failed", exc)
