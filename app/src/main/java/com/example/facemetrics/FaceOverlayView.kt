@@ -107,13 +107,40 @@ class FaceOverlayView @JvmOverloads constructor(
     private fun drawBoundingBox(canvas: Canvas, canvasWidth: Float, canvasHeight: Float, metrics: FaceMetrics) {
         val boundingBox = metrics.boundingBox
         
-        val rect = RectF(
-            boundingBox.left * canvasWidth,
-            boundingBox.top * canvasHeight,
-            boundingBox.right * canvasWidth,
+        // Ensure we have a proper width and height for the bounding box
+        // If the right and left coordinates are too close, we'll set a minimum width
+        val minWidth = canvasWidth * 0.4f // minimum 40% of screen width
+        val minHeight = canvasHeight * 0.6f // minimum 60% of screen height
+        
+        // Calculate the current width and height in pixels
+        val currentWidth = (boundingBox.right - boundingBox.left) * canvasWidth
+        val currentHeight = (boundingBox.bottom - boundingBox.top) * canvasHeight
+        
+        // If width is too small, ensure minimum width is used
+        val left = boundingBox.left * canvasWidth
+        val right = if (currentWidth < minWidth) {
+            left + minWidth
+        } else {
+            boundingBox.right * canvasWidth
+        }
+        
+        // If height is too small, ensure minimum height is used
+        val top = boundingBox.top * canvasHeight
+        val bottom = if (currentHeight < minHeight) {
+            top + minHeight
+        } else {
             boundingBox.bottom * canvasHeight
+        }
+        
+        // Create rectangle with the adjusted dimensions
+        val rect = RectF(
+            left,
+            top,
+            right,
+            bottom
         )
         
+        // Draw the rectangle
         canvas.drawRect(rect, boundingBoxPaint)
     }
     
