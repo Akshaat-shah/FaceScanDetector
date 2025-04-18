@@ -2,9 +2,9 @@ package com.example.facemetrics
 
 import android.Manifest
 import android.content.ContentValues
-import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.os.Build
 import android.os.Bundle
@@ -28,250 +28,196 @@ import java.util.concurrent.Executors
 
 private const val TAG = "MainActivity"
 
-/**
- * Main Activity for the Face Metrics application.
- * Handles permissions, camera setup, and UI coordination.
- */
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var viewModel: FaceMetricsViewModel
-    private lateinit var cameraPreviewView: PreviewView
-    private lateinit var faceOverlayView: FaceOverlayView
+    /* ───── View references ───── */
+    private lateinit var previewView: PreviewView
+    private lateinit var overlay: FaceOverlayView
     private lateinit var captureButton: FloatingActionButton
-    
-    // Image capture use case
+
+    /* ───── Camera / ML │ ViewModel & executor ───── */
+    private lateinit var viewModel: FaceMetricsViewModel
     private var imageCapture: ImageCapture? = null
-    
-    // Executor for background tasks
     private lateinit var cameraExecutor: ExecutorService
-    
-    // Permission request launcher for camera
-    private val cameraPermissionLauncher = registerForActivityResult(
+
+    /* ───── Runtime‑permission launchers ───── */
+    private val camPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            // Permission granted, start camera
-            startCamera()
-        } else {
-            // Permission denied, show toast and finish activity
+    ) { granted ->
+        if (granted) startCamera() else {
             Toast.makeText(this,
-                "Camera permission is required for this app to function",
-                Toast.LENGTH_LONG).show()
+                "Camera permission required", Toast.LENGTH_LONG).show()
             finish()
         }
     }
-    
-    // Permission request launcher for storage
+
     private val storagePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            // Permission granted, take picture
-            takePhoto()
-        } else {
-            // Permission denied
-            Toast.makeText(this, R.string.permission_denied, Toast.LENGTH_SHORT).show()
-        }
+    ) { granted ->
+        if (granted) takePhoto()
+        else Toast.makeText(this, R.string.permission_denied, Toast.LENGTH_SHORT).show()
     }
+
+    /* ───────────────────────────── onCreate ───────────────────────────── */
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-        
-        // Initialize ViewModel
-        viewModel = ViewModelProvider(this)[FaceMetricsViewModel::class.java]
-        
-        // Get references to views
-        cameraPreviewView = findViewById(R.id.camera_preview)
-        faceOverlayView = findViewById(R.id.face_overlay)
+        setContentView(R.layout.activity_main)          // XML uses previewView & overlay IDs
+
+        /* 1) findViewById */
+        previewView   = findViewById(R.id.previewView)  // <androidx.camera.view.PreviewView>
+        overlay       = findViewById(R.id.overlay)      // <FaceOverlayView>
         captureButton = findViewById(R.id.capture_button)
-        
-        // Initialize camera executor
+
+        /* 2) ViewModel & single‑thread executor */
+        viewModel = ViewModelProvider(this)[FaceMetricsViewModel::class.java]
         cameraExecutor = Executors.newSingleThreadExecutor()
-        
-        // Set up capture button click listener
+
+        /* 3) Capture‑button handler */
         captureButton.setOnClickListener {
-            if (checkStoragePermission()) {
-                takePhoto()
-            } else {
-                requestStoragePermission()
-            }
+            if (needStoragePermission()) requestStoragePermission() else takePhoto()
         }
-        
-        // Observe face metrics
+
+        /* 4) Observe face metrics → overlay */
         viewModel.faceMetrics.observe(this) { metrics ->
-            faceOverlayView.updateFaceMetrics(metrics)
+            overlay.updateFaceMetrics(metrics)
         }
-        
-        // Check and request camera permission
-        if (checkCameraPermission()) {
-            startCamera()
-        } else {
-            requestCameraPermission()
-        }
+
+        /* 5) Camera permission */
+        if (hasCamPermission()) startCamera() else camPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
-    
-    /**
-     * Start camera preview and face detection
-     */
+
+    /* ───────────────────────────── Camera start ───────────────────────── */
+
+//    private fun startCamera() {
+//        /* Create still‑capture use‑case (optional) */
+//        imageCapture = ImageCapture.Builder()
+//            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+//            .build()
+//
+//        /* Kick off ViewModel’s CameraX pipeline */
+//        viewModel.startCamera(
+//            lifecycleOwner = this,
+//            previewView    = previewView,
+//            imageCapture   = imageCapture               // may be null
+//        )
+//
+//        /* Tell overlay how preview is transformed (mirror + rotation) */
+//        overlay.setPreviewInfo(
+//            mirrored = true,                                    // front camera fixed in VM
+//            rotationDegrees = previewView.display.rotation * 90 // 0/90/180/270
+//        )
+//    }
+
+
     private fun startCamera() {
-        // Initialize image capture use case
-        imageCapture = ImageCapture.Builder()
-            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-            .build()
-            
-        // Let the ViewModel handle camera setup for face detection
-        viewModel.startCamera(this, cameraPreviewView, imageCapture)
+        // … everything you already have …
+
+        viewModel.startCamera(this, previewView, imageCapture)
+
+        // Moved into a post{} block  ↓↓↓
+        previewView.post {
+            val rotationDeg = previewView.display.rotation * 90  // 0 / 90 / 180 / 270
+            overlay.setPreviewInfo(mirrored = true, rotationDegrees = rotationDeg)
+        }
     }
-    
-    /**
-     * Take a photo and save it to gallery
-     */
+
+    /* ───────────────────────────── Photo capture ─────────────────────── */
+
     private fun takePhoto() {
-        val imageCapture = imageCapture ?: return
-        
-        // Create a callback for the image capture
-        imageCapture.takePicture(
-            cameraExecutor,
-            object : ImageCapture.OnImageCapturedCallback() {
-                override fun onCaptureSuccess(image: ImageProxy) {
-                    // Convert the image to bitmap
-                    val bitmap = imageProxyToBitmap(image)
-                    
-                    // Save bitmap to gallery
-                    if (bitmap != null) {
-                        saveImageToGallery(bitmap)
-                    }
-                    
-                    // Close the image
-                    image.close()
-                }
-                
-                override fun onError(exception: ImageCaptureException) {
-                    Log.e(TAG, "Photo capture failed: ${exception.message}", exception)
-                    runOnUiThread {
-                        Toast.makeText(
-                            this@MainActivity,
-                            R.string.photo_save_error,
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
+        val capture = imageCapture ?: return
+
+        capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(img: ImageProxy) {
+                imageProxyToBitmap(img)?.let { saveImageToGallery(it) }
+                img.close()
             }
-        )
+            override fun onError(exc: ImageCaptureException) {
+                Log.e(TAG, "Photo capture failed: ${exc.message}", exc)
+                runOnUiThread { Toast.makeText(this@MainActivity,
+                    R.string.photo_save_error, Toast.LENGTH_SHORT).show() }
+            }
+        })
     }
-    
-    /**
-     * Convert ImageProxy to Bitmap
-     */
-    private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
-        val buffer = imageProxy.planes[0].buffer
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
-        
-        // Convert to bitmap
-        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
-        
-        // Rotate bitmap if needed (front camera usually needs rotation)
-        val matrix = Matrix()
-        // For front camera mirroring and rotation
-        matrix.postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
-        matrix.postScale(-1f, 1f) // Mirror horizontally for front camera
-        
-        return Bitmap.createBitmap(
-            bitmap,
-            0,
-            0,
-            bitmap.width,
-            bitmap.height,
-            matrix,
-            true
-        )
+
+    private fun imageProxyToBitmap(proxy: ImageProxy): Bitmap? {
+        val buf  = proxy.planes[0].buffer
+        val data = ByteArray(buf.remaining()).also { buf.get(it) }
+        val bmp  = BitmapFactory.decodeByteArray(data,0,data.size) ?: return null
+
+        val m = Matrix().apply {
+            postRotate(proxy.imageInfo.rotationDegrees.toFloat())
+            postScale(-1f, 1f)                            // mirror for front camera
+        }
+        return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
     }
-    
-    /**
-     * Save bitmap to gallery
-     */
-    private fun saveImageToGallery(bitmap: Bitmap) {
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
-        val imageFileName = "FaceMetrics_$timestamp.jpg"
-        
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, imageFileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+
+    private fun saveImageToGallery(bmp: Bitmap) {
+        val ts  = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
+        val fn  = "FaceMetrics_$ts.jpg"
+        val cv  = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fn)
+            put(MediaStore.MediaColumns.MIME_TYPE,   "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/FaceMetrics")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
         }
-        
-        val resolver = contentResolver
-        val imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-        
-        imageUri?.let { uri ->
-            try {
-                resolver.openOutputStream(uri)?.use { outputStream ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 95, outputStream)
-                }
-                
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    contentValues.clear()
-                    contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
-                    resolver.update(uri, contentValues, null, null)
-                }
-                
-                runOnUiThread {
-                    Toast.makeText(this, R.string.photo_saved, Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error saving image: ${e.message}", e)
-                runOnUiThread {
-                    Toast.makeText(this, R.string.photo_save_error, Toast.LENGTH_SHORT).show()
-                }
+
+        val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv) ?: return
+        try {
+            contentResolver.openOutputStream(uri)?.use { out ->
+                bmp.compress(Bitmap.CompressFormat.JPEG, 95, out)
             }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                cv.clear(); cv.put(MediaStore.Images.Media.IS_PENDING, 0)
+                contentResolver.update(uri, cv, null, null)
+            }
+            runOnUiThread { Toast.makeText(this, R.string.photo_saved, Toast.LENGTH_SHORT).show() }
+        } catch (e: Exception) {
+            Log.e(TAG, "Saving image failed: ${e.message}", e)
+            runOnUiThread { Toast.makeText(this, R.string.photo_save_error, Toast.LENGTH_SHORT).show() }
         }
     }
-    
-    /**
-     * Check if camera permission is granted
-     */
-    private fun checkCameraPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-    }
-    
-    /**
-     * Request camera permission
-     */
-    private fun requestCameraPermission() {
-        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-    }
-    
-    /**
-     * Check if storage permission is granted
-     */
-    private fun checkStoragePermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            true // Android 10+ uses scoped storage, no permission needed
-        } else {
-            ContextCompat.checkSelfPermission(
-                this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == 
-                    PackageManager.PERMISSION_GRANTED
+
+    /* ───────────────────────── permissions helpers ───────────────────── */
+
+    private fun hasCamPermission() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+
+    private fun needStoragePermission() =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                ContextCompat.checkSelfPermission(this,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+
+    private fun requestStoragePermission() =
+        storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+
+    /* ───────────────────────── lifecycle ─────────────────────────────── */
+
+//    override fun onResume() {
+//        super.onResume()
+//        if (::overlay.isInitialized) {
+//            overlay.setPreviewInfo(
+//                mirrored = true,
+//                rotationDegrees = previewView.display.rotation * 90
+//            )
+//        }
+//    }
+
+    override fun onResume() {
+        super.onResume()
+
+        // Run after PreviewView is attached → display is non‑null
+        previewView.post {
+            val rotationDeg = previewView.display.rotation * 90
+            overlay.setPreviewInfo(
+                mirrored = true,
+                rotationDegrees = rotationDeg
+            )
         }
     }
-    
-    /**
-     * Request storage permission
-     */
-    private fun requestStoragePermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // No need to request permission for Android 10+
-            takePhoto()
-        } else {
-            storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-        }
-    }
-    
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()

@@ -22,7 +22,7 @@ class FaceAnalyzer(private val onFaceDetected: (FaceMetrics) -> Unit) : ImageAna
 
     private val executor = Executors.newSingleThreadExecutor()
     private val metricsCalculator = MetricsCalculator()
-    
+
     // Configure face detector with all landmarks and classifications
     private val faceDetectorOptions = FaceDetectorOptions.Builder()
         .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
@@ -31,9 +31,9 @@ class FaceAnalyzer(private val onFaceDetected: (FaceMetrics) -> Unit) : ImageAna
         .setMinFaceSize(0.15f)
         .enableTracking()
         .build()
-        
+
     private val faceDetector = FaceDetection.getClient(faceDetectorOptions)
-    
+
     // To track processing state and avoid parallel processing of frames
     private var isProcessing = false
 
@@ -45,19 +45,19 @@ class FaceAnalyzer(private val onFaceDetected: (FaceMetrics) -> Unit) : ImageAna
             imageProxy.close()
             return
         }
-        
+
         isProcessing = true
-        
+
         val mediaImage = imageProxy.image
         if (mediaImage == null) {
             imageProxy.close()
             isProcessing = false
             return
         }
-        
+
         val rotation = imageProxy.imageInfo.rotationDegrees
         val image = InputImage.fromMediaImage(mediaImage, rotation)
-        
+
         // Process the image with face detector
         faceDetector.process(image)
             .addOnSuccessListener { faces ->
@@ -80,7 +80,7 @@ class FaceAnalyzer(private val onFaceDetected: (FaceMetrics) -> Unit) : ImageAna
                 isProcessing = false
             }
     }
-    
+
     /**
      * Process a detected face and calculate metrics
      */
@@ -89,7 +89,7 @@ class FaceAnalyzer(private val onFaceDetected: (FaceMetrics) -> Unit) : ImageAna
         val metrics = metricsCalculator.calculateMetrics(face, imageWidth, imageHeight)
         onFaceDetected(metrics)
     }
-    
+
     /**
      * Release resources when analyzer is no longer used
      */
