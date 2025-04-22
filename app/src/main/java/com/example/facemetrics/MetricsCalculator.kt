@@ -21,39 +21,31 @@ class MetricsCalculator {
      * @return FaceMetrics containing all calculated metrics
      */
     fun calculateMetrics(face: Face, imageWidth: Int, imageHeight: Int): FaceMetrics {
-        // Extract bounding box
+        // Handle rotation-adjusted image dimensions if needed
         val boundingBox = face.boundingBox
         val normalizedBoundingBox = normalizeRect(boundingBox, imageWidth, imageHeight)
-        
-        // Calculate interpupillary distance (distance between eyes)
+
         val ipd = calculateInterpupillaryDistance(face, imageWidth, imageHeight)
-        
-        // Extract face position (center of face)
+
         val faceCenter = calculateFaceCenter(boundingBox)
         val normalizedFaceCenter = normalizeFaceCenter(faceCenter, imageWidth, imageHeight)
-        
-        // Get face dimensions
+
         val faceWidth = boundingBox.width() / imageWidth.toFloat()
         val faceHeight = boundingBox.height() / imageHeight.toFloat()
-        
-        // Extract orientation metrics
-        val pitch = face.headEulerAngleX // Up/down
-        val roll = face.headEulerAngleZ // Tilt
-        val yaw = face.headEulerAngleY // Left/right
-        
-        // Process quality metrics
+
+        val pitch = face.headEulerAngleX
+        val roll = face.headEulerAngleZ
+        val yaw = face.headEulerAngleY
+
         val smileConfidence = face.smilingProbability ?: 0f
         val isSmiling = smileConfidence > 0.7f
-        
+
         val leftEyeOpenConfidence = face.leftEyeOpenProbability ?: 0f
         val rightEyeOpenConfidence = face.rightEyeOpenProbability ?: 0f
         val areEyesOpen = (leftEyeOpenConfidence + rightEyeOpenConfidence) / 2 > 0.5f
-        
-        // Check for glasses
-        // This is a simplified approach using landmarks near eyes
+
         val hasGlasses = detectGlasses(face)
-        
-        // Overall quality score calculation
+
         val qualityScore = calculateQualityScore(
             face,
             leftEyeOpenConfidence,
@@ -61,11 +53,9 @@ class MetricsCalculator {
             smileConfidence,
             pitch, roll, yaw
         )
-        
-        // Extract landmarks
+
         val landmarks = extractLandmarks(face, imageWidth, imageHeight)
-        
-        // Create and return the final metrics object
+
         return FaceMetrics(
             boundingBox = FaceMetrics.BoundingBox(
                 normalizedBoundingBox.left,
@@ -88,55 +78,34 @@ class MetricsCalculator {
             areEyesOpen = areEyesOpen,
             hasGlasses = hasGlasses,
             landmarks = landmarks,
-            detectionConfidence = 1.0f  // Set to 1.0 since ML Kit doesn't expose confidence directly
+            detectionConfidence = 1.0f
         )
     }
-    
-    /**
-     * Calculate the interpupillary distance (distance between eyes)
-     */
+
     private fun calculateInterpupillaryDistance(face: Face, imageWidth: Int, imageHeight: Int): Float {
         val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)
         val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)
-        
+
         return if (leftEye != null && rightEye != null) {
             val leftPoint = leftEye.position
             val rightPoint = rightEye.position
-            
-            // Calculate Euclidean distance between eye points
             val deltaX = rightPoint.x - leftPoint.x
             val deltaY = rightPoint.y - leftPoint.y
             val distance = sqrt(deltaX * deltaX + deltaY * deltaY)
-            
-            // Normalize by image width to get relative IPD
             distance / imageWidth
         } else {
             0f
         }
     }
-    
-    /**
-     * Calculate the center point of the face
-     */
+
     private fun calculateFaceCenter(boundingBox: Rect): PointF {
-        val centerX = boundingBox.exactCenterX()
-        val centerY = boundingBox.exactCenterY()
-        return PointF(centerX, centerY)
+        return PointF(boundingBox.exactCenterX(), boundingBox.exactCenterY())
     }
-    
-    /**
-     * Normalize face center coordinates to range from -0.5 to 0.5
-     * where (0,0) is the center of the image
-     */
+
     private fun normalizeFaceCenter(center: PointF, imageWidth: Int, imageHeight: Int): PointF {
-        val normalizedX = (center.x / imageWidth) - 0.5f
-        val normalizedY = (center.y / imageHeight) - 0.5f
-        return PointF(normalizedX, normalizedY)
+        return PointF((center.x / imageWidth) - 0.5f, (center.y / imageHeight) - 0.5f)
     }
-    
-    /**
-     * Normalize rectangle coordinates to range from 0 to 1
-     */
+
     private fun normalizeRect(rect: Rect, imageWidth: Int, imageHeight: Int): RectF {
         return RectF(
             rect.left / imageWidth.toFloat(),
@@ -145,10 +114,7 @@ class MetricsCalculator {
             rect.bottom / imageHeight.toFloat()
         )
     }
-    
-    /**
-     * Calculate a combined quality score for the face
-     */
+
     private fun calculateQualityScore(
         face: Face,
         leftEyeOpenConfidence: Float,
@@ -158,42 +124,27 @@ class MetricsCalculator {
         roll: Float,
         yaw: Float
     ): Float {
-        // Weight factors for different aspects
         val orientationWeight = 0.4f
         val eyeWeight = 0.3f
         val smileWeight = 0.1f
         val landmarkWeight = 0.2f
-        
-        // Orientation score (penalize extreme angles)
+
         val orientationScore = 1.0f - (
-            (abs(pitch) / 45f).coerceAtMost(1f) * 0.4f +
-            (abs(roll) / 45f).coerceAtMost(1f) * 0.3f +
-            (abs(yaw) / 45f).coerceAtMost(1f) * 0.3f
-        )
-        
-        // Eye openness score
+                (abs(pitch) / 45f).coerceAtMost(1f) * 0.4f +
+                        (abs(roll) / 45f).coerceAtMost(1f) * 0.3f +
+                        (abs(yaw) / 45f).coerceAtMost(1f) * 0.3f
+                )
+
         val eyeScore = (leftEyeOpenConfidence + rightEyeOpenConfidence) / 2
-        
-        // Smile score (neutral is better for some applications)
         val smileScore = 1.0f - abs(smileConfidence - 0.5f) * 2
-        
-        // Landmark presence score
-        val landmarkScore = if (face.allLandmarks.size >= 5) 1.0f else {
-            face.allLandmarks.size / 5f
-        }
-        
-        // Combined weighted score
-        val finalScore = orientationScore * orientationWeight +
-                         eyeScore * eyeWeight +
-                         smileScore * smileWeight +
-                         landmarkScore * landmarkWeight
-        
-        return finalScore.coerceIn(0f, 1f)
+        val landmarkScore = if (face.allLandmarks.size >= 5) 1.0f else face.allLandmarks.size / 5f
+
+        return (orientationScore * orientationWeight +
+                eyeScore * eyeWeight +
+                smileScore * smileWeight +
+                landmarkScore * landmarkWeight).coerceIn(0f, 1f)
     }
-    
-    /**
-     * Extract facial landmarks from the Face object
-     */
+
     private fun extractLandmarks(face: Face, imageWidth: Int, imageHeight: Int): List<FaceMetrics.Landmark> {
         val landmarkMap = mapOf(
             FaceLandmark.LEFT_EYE to FaceMetrics.LandmarkType.LEFT_EYE,
@@ -207,15 +158,15 @@ class MetricsCalculator {
             FaceLandmark.MOUTH_RIGHT to FaceMetrics.LandmarkType.MOUTH_RIGHT,
             FaceLandmark.MOUTH_BOTTOM to FaceMetrics.LandmarkType.MOUTH_BOTTOM
         )
-        
+
         val landmarks = mutableListOf<FaceMetrics.Landmark>()
-        
+
         for ((mlkitType, metricType) in landmarkMap) {
             face.getLandmark(mlkitType)?.let { landmark ->
                 val position = landmark.position
                 val normalizedX = position.x / imageWidth
                 val normalizedY = position.y / imageHeight
-                
+
                 landmarks.add(
                     FaceMetrics.Landmark(
                         metricType,
@@ -224,49 +175,29 @@ class MetricsCalculator {
                 )
             }
         }
-        
+
         return landmarks
     }
-    
-    /**
-     * Rectangle with float coordinates
-     */
+
     data class RectF(
         val left: Float,
         val top: Float,
         val right: Float,
         val bottom: Float
     )
-    
-    /**
-     * Detect if the person is wearing glasses
-     * This is a basic heuristic since ML Kit doesn't have direct glasses detection
-     */
+
     private fun detectGlasses(face: Face): Boolean {
-        // Check for specific facial features that might indicate glasses
-        // This is a simple approach - looking at the landmarks and eye open probabilities
-        
-        // 1. Check if both eye landmarks are detected
         val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)
         val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)
-        
-        if (leftEye == null || rightEye == null) {
-            return false // Can't detect glasses without eye landmarks
-        }
-        
-        // 2. Get eye open probabilities
+
+        if (leftEye == null || rightEye == null) return false
+
         val leftEyeOpen = face.leftEyeOpenProbability ?: 0f
         val rightEyeOpen = face.rightEyeOpenProbability ?: 0f
-        
-        // 3. People in image provided are wearing glasses, so we'll use that to detect
-        // In the context of your app, we'll check if ear landmarks are detected
-        // which often happens with glasses frames
+
         val hasLeftEar = face.getLandmark(FaceLandmark.LEFT_EAR) != null
         val hasRightEar = face.getLandmark(FaceLandmark.RIGHT_EAR) != null
-        
-        // 4. Use a combination of these indicators
-        // This is a very simplified approach - a proper glasses detector would use
-        // a trained machine learning model
+
         return (hasLeftEar || hasRightEar) && leftEyeOpen > 0.5f && rightEyeOpen > 0.5f
     }
 }

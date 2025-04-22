@@ -28,9 +28,12 @@ class FaceAnalyzer(private val onFaceDetected: (FaceMetrics) -> Unit) : ImageAna
         .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
         .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
         .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-        .setMinFaceSize(0.15f)
+        // .setMinFaceSize(0.15f)
         .enableTracking()
+        .setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
         .build()
+
+    
 
     private val faceDetector = FaceDetection.getClient(faceDetectorOptions)
 
@@ -64,7 +67,14 @@ class FaceAnalyzer(private val onFaceDetected: (FaceMetrics) -> Unit) : ImageAna
                 if (faces.isNotEmpty()) {
                     // Get the face with highest confidence if multiple faces detected
                     val primaryFace = faces.maxByOrNull { it.trackingId ?: -1 } ?: faces[0]
-                    processFace(primaryFace, imageProxy.width, imageProxy.height)
+                    val rotation = imageProxy.imageInfo.rotationDegrees
+                    val (imageWidth, imageHeight) = if (rotation == 90 || rotation == 270) {
+                        imageProxy.height to imageProxy.width
+                    } else {
+                        imageProxy.width to imageProxy.height
+                    }
+                    processFace(primaryFace, imageWidth, imageHeight)
+//                    processFace(primaryFace, imageProxy.width, imageProxy.height)
                 } else {
                     // No face detected
                     onFaceDetected(FaceMetrics.createDefault())
@@ -86,7 +96,24 @@ class FaceAnalyzer(private val onFaceDetected: (FaceMetrics) -> Unit) : ImageAna
      */
     private fun processFace(face: Face, imageWidth: Int, imageHeight: Int) {
         // Calculate metrics from face
+
         val metrics = metricsCalculator.calculateMetrics(face, imageWidth, imageHeight)
+        Log.d(TAG, "► Metrics = $metrics")
+
+        Log.d(TAG, """
+        ▸ trackingId=${face.trackingId}
+        ▸ bounds=${face.boundingBox}
+        ▸ roll=${face.headEulerAngleZ}°
+        ▸ yaw =${face.headEulerAngleY}°
+        ▸ smileProb=${face.smilingProbability}
+        ▸ leftEyeOpenProb=${face.leftEyeOpenProbability}
+        ▸ rightEyeOpenProb=${face.rightEyeOpenProbability}
+    """.trimIndent())
+
+    // 3. (Optional) dump landmark positions
+    face.allLandmarks.forEach { lm ->
+        Log.d(TAG, "   landmark ${lm.landmarkType}: ${lm.position}")
+    }
         onFaceDetected(metrics)
     }
 
